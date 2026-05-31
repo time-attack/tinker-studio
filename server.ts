@@ -366,21 +366,31 @@ function extractIpaInfo(
         log(`🏗️  Architectures (header): ${architectures.join(", ")}`);
       }
 
-      // ── ObjC class names via nm (reads symbol table — correct approach) ──
-      // nm gives us _OBJC_CLASS_$_ClassName entries from the Mach-O symtab.
-      // strings | grep _OBJC_CLASS_ does NOT work because those symbols live
-      // in the symtab, not as raw ASCII strings in the binary.
-      log(`🔬 Extracting ObjC class names via nm (symbol table)…`);
+      // ── ObjC class names ──
+      // macOS: nm reads Mach-O symtab directly → _OBJC_CLASS_$_ClassName entries
+      // Linux: nm can't parse Mach-O (ELF-only tool) → use strings on raw binary
+      //        ObjC class names ARE stored as C strings in __objc_classname section
+      const isMac = process.platform === "darwin";
+      log(`🔬 Extracting ObjC class names (${isMac ? "nm symtab" : "strings scan"})…`);
       try {
-        const nmOut = sh(
-          `nm -arch arm64 "${binaryPath}" 2>/dev/null | grep '_OBJC_CLASS_\\$_' | sed 's/.*_OBJC_CLASS_\\$_//' | sort -u | head -2000`,
-          120000,
-          64 * 1024 * 1024,
-        );
+        let nmOut: string;
+        if (isMac) {
+          nmOut = sh(
+            `nm -arch arm64 "${binaryPath}" 2>/dev/null | grep '_OBJC_CLASS_\\$_' | sed 's/.*_OBJC_CLASS_\\$_//' | sort -u | head -2000`,
+            120000, 64 * 1024 * 1024,
+          );
+        } else {
+          // Linux: ObjC class names live in __objc_classname as null-terminated C strings.
+          // They're PascalCase identifiers 4-80 chars — filter strings output accordingly.
+          nmOut = sh(
+            `strings -a "${binaryPath}" 2>/dev/null | grep -E '^[A-Z][A-Za-z0-9_]{3,79}$' | sort -u | head -2000`,
+            120000, 64 * 1024 * 1024,
+          );
+        }
         objcClasses = nmOut.split("\n").filter(Boolean);
-        log(`🎯 ObjC classes (nm symtab): ${objcClasses.length}`);
+        log(`🎯 ObjC classes extracted: ${objcClasses.length}`);
       } catch (e) {
-        log(`⚠️  nm failed: ${(e as Error).message?.slice(0, 80)}`);
+        log(`⚠️  Class extraction failed: ${(e as Error).message?.slice(0, 80)}`);
       }
 
       // ── Method selectors via strings (works for ObjC AND Swift/ObjC bridge apps) ──
@@ -405,7 +415,7 @@ function extractIpaInfo(
       // Also try ObjC method implementations via nm (pure ObjC apps / ObjC files in hybrid)
       try {
         const nmMethods = sh(
-          `nm -arch arm64 "${binaryPath}" 2>/dev/null | grep -E ' [tT] [+-]\\[' | grep -oE '[+-]\\[[A-Za-z][A-Za-z0-9_]+ [a-zA-Z][a-zA-Z0-9_:]+\\]' | sort -u | head -2000`,
+          `nm ${process.platform === "darwin" ? "-arch arm64" : ""} "${binaryPath}" 2>/dev/null | grep -E ' [tT] [+-]\\[' | grep -oE '[+-]\\[[A-Za-z][A-Za-z0-9_]+ [a-zA-Z][a-zA-Z0-9_:]+\\]' | sort -u | head -2000`,
           60000,
           32 * 1024 * 1024,
         );
