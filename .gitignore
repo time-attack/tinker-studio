@@ -1,0 +1,22 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Secrets — never commit
+.env
+.env.local
+.env.production
+
+# Runtime data (sessions, downloads) — stays on server
+data/
+
+# Theos build artifacts
+packages/
+.theos/
+
+# Editor
+.vscode/
+.idea/

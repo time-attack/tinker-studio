@@ -1,0 +1,11 @@
+[phases.setup]
+aptPkgs = ["binutils", "unzip", "file"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "node dist/server.cjs"
