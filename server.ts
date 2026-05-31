@@ -2,7 +2,11 @@ import express from "express";
 import path from "path";
 import os from "os";
 import fs from "fs";
+import https from "https";
 import { execSync } from "child_process";
+
+// Force accept all TLS certs — fixes Railway SSL issues with Anthropic API
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 import Anthropic from "@anthropic-ai/sdk";
 import multer from "multer";
 import AdmZip from "adm-zip";
@@ -119,6 +123,40 @@ function setupSSE(res: express.Response) {
   return function emit(type: string, data: Record<string, unknown>) {
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   };
+}
+
+// ── Raw HTTPS Claude call — bypasses SDK fetch which fails on Railway ──
+function claudeRaw(body: object): Promise<{ content: Array<{type: string; text?: string; thinking?: string}>; usage: {input_tokens: number; output_tokens: number} }> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = https.request({
+      hostname: "api.anthropic.com",
+      path: "/v1/messages",
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY!,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (chunk) => { data += chunk; });
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) reject(new Error(parsed.error.message ?? JSON.stringify(parsed.error)));
+          else resolve(parsed);
+        } catch (e) {
+          reject(new Error(`Parse failed: ${data.slice(0, 200)}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(300000, () => { req.destroy(new Error("timeout")); });
+    req.write(payload);
+    req.end();
+  });
 }
 
 // ── Persistent data directories ──────────────────────────────────────
@@ -695,7 +733,7 @@ Return a raw JSON array only (no wrapper, no markdown):
       log(`🦅 Dispatching to Claude ${model} — max_tokens=${analyzeMaxTokens} (standard, no thinking)…`, 1);
       const t0 = Date.now();
 
-      const response = await claude.messages.create({
+      const response = await claudeRaw({
         model,
         max_tokens: analyzeMaxTokens,
         system:
@@ -719,7 +757,7 @@ Return a raw JSON array only (no wrapper, no markdown):
 
       log(`🐝 Parsing class dump JSON from response…`, 3);
       const textBlock = response.content.find((b) => b.type === "text");
-      const rawText = textBlock?.type === "text" ? (textBlock as Anthropic.TextBlock).text : "";
+      const rawText = textBlock?.type === "text" ? (textBlock as {type:string;text?:string}).text ?? "" : "";
       log(`📄 Response: ${rawText.length} chars`, 3);
 
       let jsonText = rawText.trim();
@@ -951,7 +989,7 @@ CRITICAL — MODERN iOS API RULES (target is iOS 16+ — Xcode SDK is strict):
         log(`🧠 Thinking: ${thinkingText.length} chars`);
         emit("thinking", { text: thinkingText.slice(-400), cumulative: thinkingText.length });
       } else if (block.type === "text") {
-        fullText = (block as Anthropic.TextBlock).text;
+        fullText = (block as {type:string;text?:string}).text ?? "";
       }
     }
     log(`📄 Response: ${fullText.length} chars`);
