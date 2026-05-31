@@ -42,7 +42,11 @@ if (!ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-const claude = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+const claude = new Anthropic({
+  apiKey: ANTHROPIC_API_KEY,
+  maxRetries: 3,        // auto-retry on transient network errors
+  timeout: 5 * 60 * 1000, // 5 min timeout for large generations
+});
 
 app.use(express.json({ limit: "50mb" }));
 
