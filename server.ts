@@ -872,17 +872,16 @@ CRITICAL — MODERN iOS API RULES (target is iOS 16+ — Xcode SDK is strict):
     // Tweak code for a real feature can be 5-15k tokens. 16k gives plenty of headroom.
     const maxTokens = budgetTokens > 0 ? budgetTokens + 16000 : 16000;
 
-    log(`📡 Opening Anthropic stream — ${messages.length} messages in context`);
-    log(`🐺 max_tokens=${maxTokens}  stream=true`);
+    // Use messages.create() (not stream) — stream() fails on Railway due to
+    // how the platform handles long-lived SSE connections from Node to Anthropic.
+    // We still stream our own SSE logs back to the browser; only the Anthropic
+    // call is non-streaming.
+    log(`📡 Calling Anthropic API — ${messages.length} messages in context`);
+    log(`🐺 max_tokens=${maxTokens}`);
+    log(`🦅 Claude is generating… (this can take 30–90s for large tweaks)`);
 
     const t0 = Date.now();
-    let fullText = "";
-    let thinkingText = "";
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let thinkingActive = false;
-
-    const stream = claude.messages.stream({
+    const response = await claude.messages.create({
       model,
       max_tokens: maxTokens,
       ...(thinkingOpts as object),
@@ -890,42 +889,24 @@ CRITICAL — MODERN iOS API RULES (target is iOS 16+ — Xcode SDK is strict):
       messages,
     });
 
-    for await (const event of stream) {
-      if (event.type === "message_start") {
-        inputTokens = event.message.usage.input_tokens;
-        log(`📊 Input tokens: ${inputTokens}`);
-        log(`🦅 Claude is generating…`);
-      } else if (event.type === "content_block_start") {
-        if (event.content_block.type === "thinking") {
-          thinkingActive = true;
-          log(`🧠 Extended thinking started…`);
-        } else if (event.content_block.type === "text") {
-          thinkingActive = false;
-          if (thinkingText) log(`🧠 Thinking complete — ${thinkingText.length} chars`);
-          log(`✍️  Text generation started…`);
-        }
-      } else if (event.type === "content_block_delta") {
-        if (event.delta.type === "thinking_delta") {
-          thinkingText += event.delta.thinking;
-          if (thinkingText.length % 400 < 20) {
-            const snippet = thinkingText.slice(-180).replace(/\n/g, " ");
-            log(`🧠 [thinking] …${snippet}`);
-            emit("thinking", { text: thinkingText.slice(-400), cumulative: thinkingText.length });
-          }
-        } else if (event.delta.type === "text_delta") {
-          fullText += event.delta.text;
-        }
-      } else if (event.type === "content_block_stop") {
-        if (thinkingActive) thinkingActive = false;
-      } else if (event.type === "message_delta") {
-        outputTokens = event.usage.output_tokens;
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+    const inputTokens = response.usage.input_tokens;
+    const outputTokens = response.usage.output_tokens;
+    log(`✅ Generation complete in ${elapsed}s`);
+    log(`📊 Tokens in: ${inputTokens} / out: ${outputTokens}`);
+
+    // Extract thinking + text blocks
+    let fullText = "";
+    let thinkingText = "";
+    for (const block of response.content) {
+      if (block.type === "thinking") {
+        thinkingText = (block as { type: "thinking"; thinking: string }).thinking;
+        log(`🧠 Thinking: ${thinkingText.length} chars`);
+        emit("thinking", { text: thinkingText.slice(-400), cumulative: thinkingText.length });
+      } else if (block.type === "text") {
+        fullText = (block as Anthropic.TextBlock).text;
       }
     }
-
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
-    log(`✅ Generation complete in ${elapsed}s`);
-    log(`📊 Tokens out: ${outputTokens} (total: ${inputTokens + outputTokens})`);
-    if (thinkingText) log(`🧠 Thinking: ${thinkingText.length} chars`);
     log(`📄 Response: ${fullText.length} chars`);
     log(`🐝 Parsing JSON payload…`);
 
