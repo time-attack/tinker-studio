@@ -62,6 +62,53 @@ function slog(scope: string, msg: string) {
   console.log(`\x1b[90m[${ts()}]\x1b[0m \x1b[36m[${scope}]\x1b[0m ${msg}`);
 }
 
+// ── GET /api/health — diagnose Claude connectivity ────────────────────
+app.get("/api/health", async (_req, res) => {
+  const result: Record<string, unknown> = {
+    node: process.version,
+    platform: process.platform,
+    port: process.env.PORT,
+    hasKey: !!ANTHROPIC_API_KEY,
+    keyPrefix: ANTHROPIC_API_KEY ? ANTHROPIC_API_KEY.slice(0, 20) : "NOT SET",
+  };
+
+  // DNS check
+  try {
+    const { promises: dns } = await import("dns");
+    const addr = await dns.lookup("api.anthropic.com");
+    result.dns = `✅ ${addr.address}`;
+  } catch (e) {
+    result.dns = `❌ ${(e as Error).message}`;
+  }
+
+  // Raw HTTPS check with full error chain
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY!,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 5,
+        messages: [{ role: "user", content: "ping" }],
+      }),
+    });
+    const body = await r.text();
+    result.https = `✅ HTTP ${r.status}`;
+    result.response = body.slice(0, 200);
+  } catch (e: unknown) {
+    const err = e as Error & { cause?: unknown };
+    result.https = `❌ ${err.message}`;
+    result.cause = String(err.cause);
+    result.causeCode = (err.cause as { code?: string })?.code;
+  }
+
+  res.json(result);
+});
+
 // ── SSE ──────────────────────────────────────────────────────────────
 function setupSSE(res: express.Response) {
   res.setHeader("Content-Type", "text/event-stream");
