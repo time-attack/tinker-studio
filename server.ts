@@ -5,9 +5,30 @@ import fs from "fs";
 import { execSync } from "child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import multer from "multer";
-import * as plist from "plist";
 import AdmZip from "adm-zip";
 import bplistParser from "bplist-parser";
+
+// Inline XML plist parser — no npm dependency, handles the simple key/value pairs
+// we need from Info.plist (CFBundleIdentifier, CFBundleDisplayName, etc.)
+function parseXmlPlist(xml: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  // Match <key>K</key> followed by a value tag
+  const re = /<key>([^<]+)<\/key>\s*(?:<string>([^<]*)<\/string>|<integer>([^<]*)<\/integer>|<real>([^<]*)<\/real>|(<true\/>)|(<false\/>)|<array>([\s\S]*?)<\/array>)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    const key = m[1];
+    if (m[2] !== undefined) result[key] = m[2];           // string
+    else if (m[3] !== undefined) result[key] = parseInt(m[3]); // integer
+    else if (m[4] !== undefined) result[key] = parseFloat(m[4]); // real
+    else if (m[5] !== undefined) result[key] = true;       // <true/>
+    else if (m[6] !== undefined) result[key] = false;      // <false/>
+    else if (m[7] !== undefined) {                         // <array>
+      const items = [...m[7].matchAll(/<string>([^<]*)<\/string>/g)].map(a => a[1]);
+      result[key] = items;
+    }
+  }
+  return result;
+}
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -263,7 +284,7 @@ function extractIpaInfo(
     // 2. plist npm (XML plist)
     if (!parsed) {
       try {
-        info = plist.parse(plistBuf.toString("utf8")) as Record<string, unknown>;
+        info = parseXmlPlist(plistBuf.toString("utf8"));
         parsed = true;
       } catch { /* fall through */ }
     }
@@ -271,7 +292,7 @@ function extractIpaInfo(
     // 3. plutil (macOS-only fallback)
     if (!parsed) {
       const xml = sh(`plutil -convert xml1 -o - "${plistPath}"`, 15000);
-      info = plist.parse(xml) as Record<string, unknown>;
+      info = parseXmlPlist(xml);
     }
 
     log(`✅ Info.plist parsed`);
